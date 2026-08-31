@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# Environment / secrets
+.env
+*.env
+service-account*.json
+*.key.json
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

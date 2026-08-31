@@ -1,0 +1,6 @@
+# Copy this file to terraform.tfvars and fill in your own values.
+# terraform.tfvars is gitignored on purpose, so your project ID never gets committed.
+
+project_id         = "<YOUR_PROJECT_ID>"
+region             = "asia-south1"
+bucket_name_suffix = "drift-demo"
