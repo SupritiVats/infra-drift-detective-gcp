@@ -1,6 +1,6 @@
 # Infra Drift Detective
 
-An agent that compares your real cloud resources against your Terraform code and flags anything that was changed manually outside of Terraform, explaining exactly what changed and why it is risky. A second, separate agent can then apply the fix back to the correct Terraform-defined state, but only after a human triggers it.
+An agent that compares your real cloud resources against your Terraform code and flags anything that was changed manually outside of Terraform, explaining exactly what changed and why it is risky, in plain English, before anything is fixed. A second, separate agent then applies the fix back to the correct Terraform-defined state, but only after a human clicks "Approve Fix" in Slack.
 
 Replace `<YOUR_PROJECT_ID>` and `<YOUR_REGION>` with your own project ID and region wherever they appear.
 
@@ -18,18 +18,21 @@ drift-agent (Cloud Function, READ-ONLY)
         ├─ reads the bucket's live config via the Storage API
         ├─ compares specific fields (e.g. public_access_prevention)
         │
-        ├─ Gemini 2.5 (Vertex AI): explains the drift and the risk
+        ├─ Gemini 2.5 (Vertex AI): explains the drift and the risk, in plain English
         │
-        └─ post_to_slack()  -> drift report, no changes made
-
-fix-agent (Cloud Function, WRITE-SCOPED, triggered manually/by approval)
+        └─ posts to Slack with an "Approve Fix" button — no changes made yet
+                │
+                ▼ (human reads the explanation, clicks Approve Fix)
+                │
+fix-agent (Cloud Function, WRITE-SCOPED, called directly by Slack)
         │
+        ├─ verifies the click genuinely came from Slack (signing secret)
         ├─ reads the same Terraform state to know the expected value
         ├─ patches ONLY that one field back to the expected value
-        └─ post_to_slack()  -> confirms the fix
+        └─ replies in the same Slack thread confirming the fix
 ```
 
-Two separate service accounts are used on purpose: `drift-agent` can only look and never touches anything. `fix-agent` can only act, and only on the one field it is scoped to fix, and only when a human runs it.
+Two separate service accounts are used on purpose: `drift-agent` can only look and never touches anything. `fix-agent` can only act, and only on the one field it is scoped to fix, and only after a human clicks Approve. The "why this matters" explanation is always shown to the human **before** the button exists to click — the agent never fixes anything without first explaining the risk in plain English.
 
 ---
 
@@ -54,7 +57,7 @@ Two separate service accounts are used on purpose: `drift-agent` can only look a
 1. A GCP project with billing enabled.
 2. Owner or Editor IAM role on the project.
 3. The `terraform` CLI installed locally or in Cloud Shell (Cloud Shell already has it — run `terraform -version` to check).
-4. A Slack workspace with an Incoming Webhook URL ready.
+4. A Slack workspace with an Incoming Webhook URL ready, plus access to that Slack app's settings (to enable Interactivity and copy its Signing Secret in Step 9).
 5. `gcloud` CLI installed, or use Cloud Shell.
 
 ---
@@ -228,6 +231,8 @@ gcloud functions deploy drift-agent \
 
 ## Step 7 — Deploy `fix-agent`
 
+`fix-agent` is called directly by Slack when someone clicks "Approve Fix," not by a GCP-authenticated caller. Because of that, it is deployed with `--allow-unauthenticated`, and instead verifies every request using Slack's own signing secret (set up in Step 9). This is the standard pattern for any Slack app with interactive buttons.
+
 ### Via Cloud Shell (gcloud)
 
 ```bash
@@ -240,37 +245,60 @@ gcloud functions deploy fix-agent \
   --source=. \
   --entry-point=apply_fix \
   --trigger-http \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --service-account=drift-fix-agent@<YOUR_PROJECT_ID>.iam.gserviceaccount.com \
-  --set-env-vars=GCP_PROJECT=<YOUR_PROJECT_ID>,TF_STATE_BUCKET=<YOUR_PROJECT_ID>-tf-state,TF_STATE_PREFIX=infra-drift-demo,DEMO_BUCKET_NAME=<YOUR_PROJECT_ID>-drift-demo,SLACK_WEBHOOK_URL=<YOUR_WEBHOOK_URL> \
+  --set-env-vars=GCP_PROJECT=<YOUR_PROJECT_ID>,TF_STATE_BUCKET=<YOUR_PROJECT_ID>-tf-state,TF_STATE_PREFIX=infra-drift-demo,DEMO_BUCKET_NAME=<YOUR_PROJECT_ID>-drift-demo,SLACK_WEBHOOK_URL=<YOUR_WEBHOOK_URL>,SLACK_SIGNING_SECRET=<YOUR_SLACK_SIGNING_SECRET> \
   --project=<YOUR_PROJECT_ID>
 ```
 
 ### Alternative: deploy from the Console
 
-Same as Step 6's alternative, but service name `fix-agent`, entry point `apply_fix`, service account `drift-fix-agent@<YOUR_PROJECT_ID>.iam.gserviceaccount.com`.
+Same as Step 6's alternative, but service name `fix-agent`, entry point `apply_fix`, service account `drift-fix-agent@<YOUR_PROJECT_ID>.iam.gserviceaccount.com`, **allow unauthenticated invocations**, and add `SLACK_SIGNING_SECRET` to the environment variables.
 
 ---
 
-## Step 8 — Allow yourself to invoke both functions for testing
+## Step 8 — Allow yourself to invoke `drift-agent` for testing
+
+`fix-agent` does not need this — it is already public and secured by Slack's signature instead.
 
 ```bash
 gcloud functions add-invoker-policy-binding drift-agent \
   --region=<YOUR_REGION> \
   --member="user:<YOUR_EMAIL>" \
   --project=<YOUR_PROJECT_ID>
-
-gcloud functions add-invoker-policy-binding fix-agent \
-  --region=<YOUR_REGION> \
-  --member="user:<YOUR_EMAIL>" \
-  --project=<YOUR_PROJECT_ID>
 ```
 
-**Via the Console:** go to **Cloud Run → (each service) → Permissions → Add Principal**, add your email with role **Cloud Run Invoker**.
+**Via the Console:** go to **Cloud Run → drift-agent → Permissions → Add Principal**, add your email with role **Cloud Run Invoker**.
 
 ---
 
-## Step 9 — Test: confirm no drift exists yet
+## Step 9 — Connect the "Approve Fix" button to `fix-agent` in Slack
+
+1. Get `fix-agent`'s public URL:
+   ```bash
+   gcloud functions describe fix-agent \
+     --region=<YOUR_REGION> \
+     --project=<YOUR_PROJECT_ID> \
+     --gen2 \
+     --format="value(serviceConfig.uri)"
+   ```
+2. Go to `https://api.slack.com/apps` and open your Slack app.
+3. In the left sidebar, if **Socket Mode** is turned on, go to **Socket Mode** and turn it **Off** first — Socket Mode and a Request URL are two different integration styles, and a Cloud Function needs the Request URL style, not Socket Mode.
+4. Go to **Interactivity & Shortcuts**, toggle **Interactivity** to **On**.
+5. Paste the `fix-agent` URL from step 1 into the **Request URL** field.
+6. Click **Save Changes**.
+7. Go to **Basic Information**, find **App Credentials**, and copy the **Signing Secret**.
+8. Update `fix-agent`'s `SLACK_SIGNING_SECRET` environment variable with that value, if you deployed before generating it:
+   ```bash
+   gcloud functions deploy fix-agent \
+     --region=<YOUR_REGION> \
+     --update-env-vars=SLACK_SIGNING_SECRET=<YOUR_SLACK_SIGNING_SECRET> \
+     --project=<YOUR_PROJECT_ID>
+   ```
+
+---
+
+## Step 10 — Test: confirm no drift exists yet
 
 ```bash
 gcloud functions call drift-agent \
@@ -282,7 +310,7 @@ Expected output: `No drift detected on <bucket>. Live config matches Terraform s
 
 ---
 
-## Step 10 — Simulate drift
+## Step 11 — Simulate drift
 
 Manually change the bucket's setting outside of Terraform, the way a real engineer might do it by accident:
 
@@ -298,7 +326,7 @@ gcloud storage buckets update gs://<YOUR_PROJECT_ID>-drift-demo --no-public-acce
 
 ---
 
-## Step 11 — Run the detector again
+## Step 12 — Run the detector again
 
 ```bash
 gcloud functions call drift-agent \
@@ -306,29 +334,43 @@ gcloud functions call drift-agent \
   --project=<YOUR_PROJECT_ID>
 ```
 
-This time it should detect the mismatch and post a Slack message explaining the drift and the risk, written by Gemini based on the real before/after values.
+This time it should detect the mismatch and post a Slack message explaining the drift and the risk, written by Gemini based on the real before/after values — with an **Approve Fix** button attached. No fix has happened yet at this point.
 
 ---
 
-## Step 12 — Apply the human-approved fix
+## Step 13 — Approve the fix from Slack
+
+Go to the Slack message and click **Approve Fix**. This sends the click directly to `fix-agent` (via the Request URL from Step 9) — nothing on your machine or in Cloud Shell needs to run.
+
+`fix-agent` verifies the click really came from Slack, applies the one field it's scoped to fix, and replies in the same Slack thread confirming it.
+
+Then re-run Step 10's command — it should now say "No drift detected" again.
+
+### Manual test path (without clicking anything in Slack)
+
+If you want to test `fix-agent` directly without waiting for a real Slack click:
 
 ```bash
-gcloud functions call fix-agent \
-  --region=<YOUR_REGION> \
-  --project=<YOUR_PROJECT_ID>
+curl -X POST https://<FIX_AGENT_URL>
 ```
 
-Check Slack for the confirmation message. Then re-run Step 9's command — it should now say "No drift detected" again.
+Since there is no `X-Slack-Signature` header on this request, `fix-agent` recognizes it as a manual test call and runs the fix directly, posting the confirmation to the static Slack webhook instead of a Slack thread.
 
 ---
 
 ## Troubleshooting
 
-**"The caller does not have permission" when testing:**
+**"The caller does not have permission" when testing `drift-agent`:**
 Re-run Step 8, or confirm the correct email with `gcloud config get-value account`.
 
 **`drift-agent` can't read the Terraform state file:**
 Confirm `TF_STATE_BUCKET` and `TF_STATE_PREFIX` env vars exactly match what's in `backend.tf`, and that `drift-agent-readonly` has `Storage Object Viewer` on the state bucket.
+
+**Clicking "Approve Fix" in Slack does nothing:**
+Confirm Socket Mode is turned off and the Request URL in Step 9 is set to `fix-agent`'s real URL. Slack will show a red error banner on the Interactivity page if the URL doesn't respond correctly when you save.
+
+**`fix-agent` returns `403 invalid signature`:**
+Confirm `SLACK_SIGNING_SECRET` on the function exactly matches the Signing Secret shown on the Slack app's Basic Information page — regenerating the secret in Slack invalidates the old one.
 
 **`fix-agent` fails to patch the bucket:**
 Confirm `drift-fix-agent` has the `Storage Admin` role at the **bucket** level (Step 5) — a project-level role is not required and should be avoided on purpose.
@@ -341,8 +383,9 @@ Make sure the state bucket from Step 2 exists and `backend.tf` has your real pro
 ## Expected end state
 
 - A Terraform-managed demo bucket exists, state stored remotely in GCS.
-- `drift-agent` correctly reports "no drift" when things match, and clearly explains drift when they don't.
-- `fix-agent` can restore the one field it's scoped to, only when triggered, and confirms in Slack.
+- `drift-agent` correctly reports "no drift" when things match, and clearly explains drift, in plain English, when they don't — with an Approve Fix button attached to that same message.
+- No fix happens until a human clicks that button in Slack.
+- `fix-agent` verifies the click really came from Slack, restores the one field it's scoped to, and confirms in the same Slack thread.
 - Neither function can affect anything beyond the one demo bucket.
 
 ---
@@ -350,3 +393,5 @@ Make sure the state bucket from Step 2 exists and `backend.tf` has your real pro
 ## Safety design
 
 `drift-agent-readonly` can only read the Terraform state bucket and the demo bucket's metadata, and call Vertex AI — it cannot write or delete anything. `drift-fix-agent` has write access, but it is scoped to a single bucket via a bucket-level IAM binding, not a project-wide role, and it only ever changes the one field it detected drift on. Neither agent runs `terraform apply` or has any broader infrastructure access.
+
+The approval step is real, not just implied: `drift-agent` never calls `fix-agent` itself. The only way `fix-agent` runs is a genuine Slack button click, verified with Slack's own signing secret. The explanation of *why* something is risky is always shown to a human first — the button to fix it doesn't exist until after that explanation has already been posted.

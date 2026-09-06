@@ -75,12 +75,31 @@ def explain_drift(drift):
     return resp.text
 
 
-def post_to_slack(message):
+def post_drift_with_approval_button(message, bucket_name):
+    """Posts the drift explanation to Slack with an 'Approve Fix' button attached.
+    Clicking the button sends the click to fix-agent's Request URL (configured once
+    in the Slack app's Interactivity settings) — drift-agent itself never triggers
+    any fix, it only ever explains and asks."""
     if not SLACK_WEBHOOK_URL:
         print("No SLACK_WEBHOOK_URL configured; message:", message)
         return
+    blocks = [
+        {"type": "section", "text": {"type": "mrkdwn", "text": message}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Approve Fix"},
+                    "style": "primary",
+                    "action_id": "approve_fix",
+                    "value": bucket_name,
+                }
+            ],
+        },
+    ]
     try:
-        requests.post(SLACK_WEBHOOK_URL, json={"text": message}, timeout=10)
+        requests.post(SLACK_WEBHOOK_URL, json={"blocks": blocks}, timeout=10)
     except Exception as e:
         print("Failed to post to Slack:", e)
 
@@ -105,5 +124,5 @@ def check_drift(request):
     print("Drift found:", drift)
     explanation = explain_drift(drift)
     message = f":rotating_light: *Infrastructure drift detected* on `{DEMO_BUCKET_NAME}`\n\n{explanation}"
-    post_to_slack(message)
+    post_drift_with_approval_button(message, DEMO_BUCKET_NAME)
     return f"Drift detected: {json.dumps(drift)}", 200
