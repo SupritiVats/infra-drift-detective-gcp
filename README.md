@@ -1,7 +1,7 @@
 # Infra Drift Detective
 
 An agent that compares your real cloud resources against your Terraform code and flags anything that was changed manually outside of Terraform, explaining exactly what changed and why it is risky, in plain English, before anything is fixed. A second, separate agent then applies the fix back to the correct Terraform-defined state, but only after a human clicks "Approve Fix" in Slack.
-
+![![alt text](image.png)](image.png)
 Replace `<YOUR_PROJECT_ID>` and `<YOUR_REGION>` with your own project ID and region wherever they appear.
 
 ---
@@ -133,6 +133,8 @@ Note the `demo_bucket_name` value — you will need it as `DEMO_BUCKET_NAME` in 
 
 ## Step 4 — Create the read-only service account for `drift-agent`
 
+`drift-agent` reads the bucket's own metadata (its `public_access_prevention` setting), not just objects inside it. This needs `storage.buckets.get`, which **`Storage Object Viewer` alone does not include** — that role only covers objects, not bucket-level metadata. So this account needs both `Storage Object Viewer` (for the Terraform state file, which is an object) and `Storage Legacy Bucket Reader` (for reading the demo bucket's own settings).
+
 ### Via the Console (UI)
 
 1. Go to **IAM & Admin → Service Accounts → Create Service Account**.
@@ -141,6 +143,7 @@ Note the `demo_bucket_name` value — you will need it as `DEMO_BUCKET_NAME` in 
    - Storage Object Viewer
    - Vertex AI User
 4. Click **Done**.
+5. Then go to **Cloud Storage → Buckets → your demo bucket → Permissions → Add Principal**, add `drift-agent-readonly@<YOUR_PROJECT_ID>.iam.gserviceaccount.com` with role **Storage Legacy Bucket Reader** (bucket-level, not project-level).
 
 ### Via Cloud Shell (gcloud)
 
@@ -154,6 +157,10 @@ for role in roles/storage.objectViewer roles/aiplatform.user; do
     --member="serviceAccount:drift-agent-readonly@<YOUR_PROJECT_ID>.iam.gserviceaccount.com" \
     --role="$role"
 done
+
+gcloud storage buckets add-iam-policy-binding gs://<YOUR_PROJECT_ID>-drift-demo \
+  --member="serviceAccount:drift-agent-readonly@<YOUR_PROJECT_ID>.iam.gserviceaccount.com" \
+  --role="roles/storage.legacyBucketReader"
 ```
 
 ---
@@ -386,6 +393,9 @@ Re-run Step 8, or confirm the correct email with `gcloud config get-value accoun
 
 **`drift-agent` can't read the Terraform state file:**
 Confirm `TF_STATE_BUCKET` and `TF_STATE_PREFIX` env vars exactly match what's in `backend.tf`, and that `drift-agent-readonly` has `Storage Object Viewer` on the state bucket.
+
+**`drift-agent` fails with `storage.buckets.get` permission denied on the demo bucket:**
+This means `drift-agent-readonly` only has `Storage Object Viewer`, which does not include bucket-metadata read access. Grant it `Storage Legacy Bucket Reader` on the demo bucket as well (see Step 4) — this is a real, easy-to-miss IAM gap, not a propagation delay, so re-checking the role rather than just waiting will fix it faster.
 
 **Clicking "Approve Fix" in Slack does nothing:**
 Confirm Socket Mode is turned off and the Request URL in Step 9 is set to `fix-agent`'s real URL. Slack will show a red error banner on the Interactivity page if the URL doesn't respond correctly when you save.
