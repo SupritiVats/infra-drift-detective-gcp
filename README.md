@@ -224,7 +224,13 @@ gcloud functions deploy drift-agent \
 6. Paste `drift-agent/main.py` and `drift-agent/requirements.txt` into the inline editor.
 7. Trigger: **HTTPS**, require authentication.
 8. Service account: `drift-agent-readonly@<YOUR_PROJECT_ID>.iam.gserviceaccount.com`.
-9. Environment variables: same as the `--set-env-vars` list above, one per field.
+9. Environment variables — add each one:
+   - `GCP_PROJECT` = `<YOUR_PROJECT_ID>`
+   - `VERTEX_LOCATION` = `us-central1`
+   - `TF_STATE_BUCKET` = `<YOUR_PROJECT_ID>-tf-state`
+   - `TF_STATE_PREFIX` = `infra-drift-demo`
+   - `DEMO_BUCKET_NAME` = `<YOUR_PROJECT_ID>-drift-demo`
+   - `SLACK_WEBHOOK_URL` = `<YOUR_WEBHOOK_URL>`
 10. Click **Create**.
 
 ---
@@ -253,7 +259,22 @@ gcloud functions deploy fix-agent \
 
 ### Alternative: deploy from the Console
 
-Same as Step 6's alternative, but service name `fix-agent`, entry point `apply_fix`, service account `drift-fix-agent@<YOUR_PROJECT_ID>.iam.gserviceaccount.com`, **allow unauthenticated invocations**, and add `SLACK_SIGNING_SECRET` to the environment variables.
+1. Go to **Cloud Run → Create Service → Function** tab.
+2. Service name: `fix-agent`.
+3. Region: `<YOUR_REGION>`.
+4. Runtime: **Python 3.12**.
+5. Entry point: `apply_fix`.
+6. Paste `fix-agent/main.py` and `fix-agent/requirements.txt` into the inline editor.
+7. Trigger: **HTTPS**, **allow unauthenticated invocations** (Slack calls this directly, see the note above).
+8. Service account: `drift-fix-agent@<YOUR_PROJECT_ID>.iam.gserviceaccount.com`.
+9. Environment variables — add each one:
+   - `GCP_PROJECT` = `<YOUR_PROJECT_ID>`
+   - `TF_STATE_BUCKET` = `<YOUR_PROJECT_ID>-tf-state`
+   - `TF_STATE_PREFIX` = `infra-drift-demo`
+   - `DEMO_BUCKET_NAME` = `<YOUR_PROJECT_ID>-drift-demo`
+   - `SLACK_WEBHOOK_URL` = `<YOUR_WEBHOOK_URL>`
+   - `SLACK_SIGNING_SECRET` = `<YOUR_SLACK_SIGNING_SECRET>` (from Step 9 — if you haven't gotten this yet, you can add it after, using **Edit & Deploy New Revision** on this service)
+10. Click **Create**.
 
 ---
 
